@@ -1,0 +1,10 @@
+node_modules/
+frontend-v2/node_modules/
+.vscode/
+.env
+dist/
+build/
+*.pth
+__pycache__/
+*.pyc
+backend/models/
