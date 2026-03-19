@@ -1,3 +1,4 @@
+
 """
 SAM (Segment Anything Model) Integration
 Provides both click-to-segment and draw boundary modes

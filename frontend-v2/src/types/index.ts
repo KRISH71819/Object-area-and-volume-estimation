@@ -92,19 +92,17 @@ export interface MeasureResponse {
   success: boolean;
   measurements: {
     area_cm2: number;
-    volume_cm3: number;
     width_cm: number;
     height_cm: number;
-    depth_avg_cm: number;
     pixels_per_cm: number;
   };
-  depth_map: string; // base64
+  depth_map: string | null;
   mesh_data: {
     vertices: number[];
     indices: number[];
     vertex_count: number;
     face_count: number;
-  };
+  } | null;
 }
 
 /** Metric measurement response from backend */

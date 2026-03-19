@@ -11,7 +11,7 @@ from typing import Tuple, Optional
 
 # Reference object dimensions in cm
 REFERENCE_OBJECTS = {
-    "coin_10_inr": {"diameter": 2.75, "type": "circle"},      # ₹10 coin
+    "coin_10_inr": {"diameter": 2.7, "type": "circle"},      # ₹10 coin (27mm per RBI spec)
     "coin_5_inr": {"diameter": 2.3, "type": "circle"},        # ₹5 coin
     "coin_2_inr": {"diameter": 2.5, "type": "circle"},        # ₹2 coin
     "coin_1_inr": {"diameter": 2.1, "type": "circle"},        # ₹1 coin
