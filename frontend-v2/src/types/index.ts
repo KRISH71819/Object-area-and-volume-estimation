@@ -169,3 +169,22 @@ export interface ARMeasurement {
   isClosed: boolean;       // whether the polygon is closed
 }
 
+/** A single captured frame for 3D volume estimation */
+export interface VolumeFrame {
+  imageBase64: string;          // JPEG base64
+  viewMatrix: number[];         // 4x4 column-major from XRView (16 floats)
+  projectionMatrix: number[];   // 4x4 column-major from XRView (16 floats)
+  width: number;
+  height: number;
+}
+
+/** Volume estimation response from backend */
+export interface VolumeResponse {
+  success: boolean;
+  volume_cm3: number;
+  voxel_count: number;
+  bounding_box_cm: [number, number, number];
+  frames_used: number;
+  error?: string;
+}
+

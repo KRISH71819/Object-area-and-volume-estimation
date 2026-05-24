@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
@@ -71,6 +71,7 @@ async def root():
                 <li>POST /segment/box - Segment by bounding box</li>
                 <li>POST /segment/polygon - Segment by drawn polygon</li>
                 <li>POST /measure - Measure object area with reference</li>
+                <li>POST /api/volume-3d - 3D volume via multi-view voxel carving</li>
             </ul>
         </body>
     </html>
@@ -186,6 +187,98 @@ async def measure_object_endpoint(
         "depth_map": None,
         "mesh_data": None,
     })
+
+
+# =====================================================================
+#  3D Volume Estimation — Multi-View Voxel Carving
+#  Completely parallel to existing endpoints; nothing above is touched.
+# =====================================================================
+
+@app.post("/api/volume-3d")
+async def estimate_volume_3d(payload: dict = Body(...)):
+    ensure_models_loaded()
+    from segmentation import segment_by_click as do_segment_click
+    from measurement import calculate_voxel_volume_metric, project_point_to_pixel
+
+    anchor = payload.get("anchor", {})
+    frames = payload.get("frames", [])
+
+    if not anchor or "x" not in anchor:
+        return JSONResponse({"success": False, "error": "missing anchor"}, status_code=400)
+
+    if len(frames) < 2:
+        return JSONResponse({"success": False, "error": "need at least 2 frames"}, status_code=400)
+
+    ax = float(anchor.get("x", 0))
+    ay = float(anchor.get("y", 0))
+    az = float(anchor.get("z", 0))
+    anchor_h = np.array([ax, ay, az, 1.0], dtype=np.float64)
+
+    masks = []
+    view_matrices = []
+    proj_matrices = []
+    img_sizes = []
+    raw_images = []
+
+    for idx, fd in enumerate(frames):
+        try:
+            img = base64_to_image(fd["imageBase64"])
+            h, w = img.shape[:2]
+            raw_images.append(img)
+
+            vmat = np.array(fd["viewMatrix"], dtype=np.float64).reshape(4, 4).T
+            pmat = np.array(fd["projectionMatrix"], dtype=np.float64).reshape(4, 4).T
+
+            fw = fd.get("width", w)
+            fh = fd.get("height", h)
+
+            pu, pv = project_point_to_pixel(anchor_h, vmat, pmat, fw, fh)
+
+            if pu is not None and 0 <= pu < fw and 0 <= pv < fh:
+                click_x, click_y = pu, pv
+            else:
+                click_x, click_y = w // 2, h // 2
+
+            print(f"  [volume] frame {idx+1}/{len(frames)}: sam click=({click_x},{click_y}), size={w}x{h}")
+
+            mask = do_segment_click(img, [[click_x, click_y]], [1])
+
+            masks.append(mask)
+            view_matrices.append(fd["viewMatrix"])
+            proj_matrices.append(fd["projectionMatrix"])
+            img_sizes.append((fw, fh))
+
+        except Exception as e:
+            print(f"  [volume] frame {idx} failed: {e}")
+            continue
+
+    if len(masks) < 2:
+        return JSONResponse({
+            "success": False,
+            "error": f"only {len(masks)} frames segmented, need 2+"
+        }, status_code=400)
+
+    print(f"  [volume] running voxel carving: {len(masks)} views, anchor=({ax:.3f},{ay:.3f},{az:.3f})")
+
+    result = calculate_voxel_volume_metric(
+        anchor=anchor,
+        masks=masks,
+        view_matrices=view_matrices,
+        proj_matrices=proj_matrices,
+        img_sizes=img_sizes,
+        debug_images=raw_images
+    )
+
+    print(f"  [volume] result: {result['volume_cm3']} cm3 ({result['voxel_count']} voxels)")
+
+    return JSONResponse({
+        "success": True,
+        "volume_cm3": result["volume_cm3"],
+        "voxel_count": result["voxel_count"],
+        "bounding_box_cm": result["bounding_box_cm"],
+        "frames_used": len(masks)
+    })
+
 
 @app.get("/health")
 async def health_check():

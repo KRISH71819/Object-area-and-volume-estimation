@@ -55,6 +55,7 @@ export default defineConfig({
       '/scale': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
       '/preload': 'http://localhost:8000',
+      '/api': 'http://localhost:8000',
     },
   },
 });

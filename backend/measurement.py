@@ -310,3 +310,141 @@ def measure_object_area(
         "pixels_per_cm": round(float(pixels_per_cm), 2),
     }
 
+
+
+def project_point_to_pixel(point3d, vmat, pmat, imgw, imgh):
+    p = np.array(point3d, dtype=np.float64)
+    cam = vmat @ p
+    clip = pmat @ cam
+    w = clip[3]
+    if w <= 0:
+        return None, None
+    xn = clip[0] / w
+    yn = clip[1] / w
+    u = int((xn + 1.0) * (imgw / 2.0))
+    v = int((1.0 - yn) * (imgh / 2.0))
+    return u, v
+
+
+def calculate_voxel_volume_metric(
+    anchor, masks, view_matrices, proj_matrices, img_sizes=None, debug_images=None
+):
+    if len(masks) == 0:
+        return {"volume_cm3": 0.0, "voxel_count": 0, "bounding_box_cm": [0, 0, 0]}
+
+    n = len(masks)
+    ax = float(anchor.get("x", 0))
+    ay = float(anchor.get("y", 0))
+    az = float(anchor.get("z", 0))
+
+    step = 0.01
+    xs = np.arange(ax - 0.15, ax + 0.15, step)
+    ys = np.arange(ay, ay + 0.30, step)
+    zs = np.arange(az - 0.15, az + 0.15, step)
+
+    gx, gy, gz = np.meshgrid(xs, ys, zs, indexing='ij')
+    centers = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    total = centers.shape[0]
+
+    if total == 0:
+        return {"volume_cm3": 0.0, "voxel_count": 0, "bounding_box_cm": [0, 0, 0]}
+
+    print(f"    [voxel] grid: {len(xs)}x{len(ys)}x{len(zs)} = {total}, anchor=({ax:.3f}, {ay:.3f}, {az:.3f})")
+
+    if debug_images is not None and len(debug_images) > 0 and n > 0:
+        vmat0 = np.array(view_matrices[0], dtype=np.float64).reshape(4, 4).T
+        pmat0 = np.array(proj_matrices[0], dtype=np.float64).reshape(4, 4).T
+        if img_sizes and len(img_sizes) > 0:
+            dw, dh = img_sizes[0]
+        else:
+            dh, dw = masks[0].shape[:2]
+        anchor_h = np.array([ax, ay, az, 1.0], dtype=np.float64)
+        du, dv = project_point_to_pixel(anchor_h, vmat0, pmat0, dw, dh)
+        print(f"    [debug] anchor projected to pixel: u={du}, v={dv} (image {dw}x{dh})")
+        if du is not None and dv is not None:
+            dbg = debug_images[0].copy()
+            if len(dbg.shape) == 2:
+                dbg = cv2.cvtColor(dbg, cv2.COLOR_GRAY2BGR)
+            cv2.circle(dbg, (du, dv), 15, (0, 0, 255), 3)
+            cv2.circle(dbg, (du, dv), 3, (0, 0, 255), -1)
+            cv2.putText(dbg, f"anchor ({du},{dv})", (du + 20, dv - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imwrite("debug_anchor_projection.jpg", dbg)
+            print(f"    [debug] saved debug_anchor_projection.jpg")
+
+            mk = masks[0].copy()
+            if len(mk.shape) == 2:
+                mk_vis = cv2.cvtColor(mk, cv2.COLOR_GRAY2BGR)
+            else:
+                mk_vis = mk.copy()
+            cv2.circle(mk_vis, (du, dv), 10, (0, 0, 255), 2)
+            cv2.imwrite("debug_sam_mask.jpg", mk_vis)
+            print(f"    [debug] saved debug_sam_mask.jpg")
+
+    ones = np.ones((total, 1), dtype=np.float64)
+    pts = np.hstack([centers, ones])
+
+    votes = np.zeros(total, dtype=np.int32)
+    valid = np.full(total, n, dtype=np.int32)
+
+    for i in range(n):
+        vmat = np.array(view_matrices[i], dtype=np.float64).reshape(4, 4).T
+        pmat = np.array(proj_matrices[i], dtype=np.float64).reshape(4, 4).T
+
+        cam = vmat @ pts.T
+        clip = pmat @ cam
+
+        w = clip[3, :]
+        behind = w <= 0.0
+        valid[behind] -= 1
+
+        front = ~behind
+        xn = np.full(total, -999.0)
+        yn = np.full(total, -999.0)
+        xn[front] = clip[0, front] / w[front]
+        yn[front] = clip[1, front] / w[front]
+
+        if img_sizes and i < len(img_sizes):
+            iw, ih = img_sizes[i]
+        else:
+            ih, iw = masks[i].shape[:2]
+
+        uu = ((xn + 1.0) * (iw / 2.0)).astype(np.int32)
+        vv = ((1.0 - yn) * (ih / 2.0)).astype(np.int32)
+
+        inb = front & (uu >= 0) & (uu < iw) & (vv >= 0) & (vv < ih)
+
+        mk = masks[i]
+        if len(mk.shape) == 3:
+            mk = mk[:, :, 0]
+
+        uu_s = np.clip(uu, 0, iw - 1)
+        vv_s = np.clip(vv, 0, ih - 1)
+        fg = mk[vv_s, uu_s] > 127
+
+        votes[inb & fg] += 1
+
+    ok = valid > 0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.where(ok, votes / valid, 0.0)
+    kept = ok & (ratio >= 0.80)
+    count = int(np.sum(kept))
+
+    vol_m3 = count * (step ** 3)
+    vol_cm3 = vol_m3 * 1_000_000
+
+    if count > 0:
+        sv = centers[kept] * 100.0
+        bmin = sv.min(axis=0)
+        bmax = sv.max(axis=0)
+        bbox = (bmax - bmin).tolist()
+    else:
+        bbox = [0.0, 0.0, 0.0]
+
+    print(f"    [voxel] kept: {count}, volume={vol_cm3:.2f} cm3")
+
+    return {
+        "volume_cm3": round(float(vol_cm3), 2),
+        "voxel_count": count,
+        "bounding_box_cm": [round(b, 1) for b in bbox],
+    }
+

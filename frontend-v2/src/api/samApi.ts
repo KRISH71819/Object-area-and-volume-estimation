@@ -125,3 +125,35 @@ export function base64ToImage(b64: string): Promise<HTMLImageElement> {
     img.src = `data:image/png;base64,${b64}`;
   });
 }
+
+// =====================================================================
+//  3D Volume Estimation — Multi-View Voxel Carving
+//  Added as a completely parallel function; nothing above is touched.
+// =====================================================================
+
+import type { VolumeFrame, VolumeResponse, Point3D } from '../types';
+
+/**
+ * Send multi-view frames + anchor for 3D voxel-carving volume estimation.
+ * Payload: { anchor: {x, y, z}, frames: [...] }
+ */
+export async function estimateVolume3D(
+  frames: VolumeFrame[],
+  anchor: Point3D
+): Promise<VolumeResponse> {
+  const res = await fetch(`${API_BASE}/api/volume-3d`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      anchor: { x: anchor.x, y: anchor.y, z: anchor.z },
+      frames,
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Volume estimation failed: ${res.statusText}`);
+  }
+
+  return res.json();
+}
